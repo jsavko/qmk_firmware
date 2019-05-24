@@ -43,3 +43,12 @@ MCU  = cortex-m0plus
 # ARM version, CORTEX-M0/M1 are 6, CORTEX-M3/M4/M7 are 7
 # I.e. 6 for Teensy LC; 7 for Teensy 3.x
 ARMV = 6
+
+
+MOUSEKEY_ENABLE = yes	# Mouse keys
+EXTRAKEY_ENABLE = yes	# Audio control and System control
+CONSOLE_ENABLE = yes	# Console for debug
+COMMAND_ENABLE = yes    # Commands for debug and configuration
+SLEEP_LED_ENABLE = yes  # Breathing sleep LED during USB suspend
+NKRO_ENABLE = yes	    # USB Nkey Rollover
+CUSTOM_MATRIX = yes # Custom matrix file
