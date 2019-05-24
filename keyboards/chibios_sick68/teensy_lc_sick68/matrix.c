@@ -14,9 +14,7 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
-#include <stdint.h>
-#include <stdbool.h>
-#include <string.h>
+
 #include "ch.h"
 #include "hal.h"
 
@@ -28,17 +26,20 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "util.h"
 #include "matrix.h"
 #include "wait.h"
-#include "timer.h"
 
 #ifndef DEBOUNCE
 #   define DEBOUNCE 5
 #endif
+static uint8_t debouncing = DEBOUNCE;
 
 /* matrix state(1:on, 0:off) */
 static matrix_row_t matrix[MATRIX_ROWS];
 static matrix_row_t matrix_debouncing[MATRIX_ROWS];
-static bool debouncing = false;
-static uint16_t debouncing_time = 0;
+
+static matrix_row_t read_cols(void);
+static void init_cols(void);
+static void unselect_rows(void);
+static void select_row(uint8_t row);
 
 
 inline
@@ -53,101 +54,59 @@ uint8_t matrix_cols(void)
     return MATRIX_COLS;
 }
 
-vvoid matrix_init(void)
+#define LED_ON()    do { palSetPad(TEENSY_PIN13_IOPORT, TEENSY_PIN13) ;} while (0)
+#define LED_OFF()   do { palClearPad(TEENSY_PIN13_IOPORT, TEENSY_PIN13); } while (0)
+#define LED_TGL()   do { palTogglePad(TEENSY_PIN13_IOPORT, TEENSY_PIN13); } while (0)
+
+void matrix_init(void)
 {
+    // initialize row and col
+    unselect_rows();
+    init_cols();
+
+    // initialize matrix state: all keys off
+    for (uint8_t i=0; i < MATRIX_ROWS; i++) {
+        matrix[i] = 0;
+        matrix_debouncing[i] = 0;
+    }
+
+    //debug
     debug_matrix = true;
-
-    /* Column(sense) */
-    palSetPadMode(GPIOD, 0,   PAL_MODE_INPUT_PULLDOWN);
-    palSetPadMode(GPIOD, 1,   PAL_MODE_INPUT_PULLDOWN);
-    palSetPadMode(GPIOD, 4,   PAL_MODE_INPUT_PULLDOWN);
-    palSetPadMode(GPIOD, 5,  PAL_MODE_INPUT_PULLDOWN);
-    palSetPadMode(GPIOD, 6,  PAL_MODE_INPUT_PULLDOWN);
-    palSetPadMode(GPIOD, 7,  PAL_MODE_INPUT_PULLDOWN);
-    palSetPadMode(GPIOC, 0,   PAL_MODE_INPUT_PULLDOWN);
-    palSetPadMode(GPIOC, 1,  PAL_MODE_INPUT_PULLDOWN);
-    palSetPadMode(GPIOC, 2,  PAL_MODE_INPUT_PULLDOWN);
-    palSetPadMode(GPIOC, 3,  PAL_MODE_INPUT_PULLDOWN);
-    palSetPadMode(GPIOC, 4,  PAL_MODE_INPUT_PULLDOWN);
-    palSetPadMode(GPIOC, 5,  PAL_MODE_INPUT_PULLDOWN);
-    palSetPadMode(GPIOC, 6,  PAL_MODE_INPUT_PULLDOWN);
-    palSetPadMode(GPIOC, 7,  PAL_MODE_INPUT_PULLDOWN);
-    palSetPadMode(GPIOC, 8,   PAL_MODE_INPUT_PULLDOWN);
-    palSetPadMode(GPIOC, 9,   PAL_MODE_INPUT_PULLDOWN);
-\
-
-
-    /* Row(strobe) */
-    palSetPadMode(GPIOB, 0,   PAL_MODE_OUTPUT_PUSHPULL);
-    palSetPadMode(GPIOB, 1,   PAL_MODE_OUTPUT_PUSHPULL);
-    palSetPadMode(GPIOB, 2,   PAL_MODE_OUTPUT_PUSHPULL);
-    palSetPadMode(GPIOB, 3,  PAL_MODE_OUTPUT_PUSHPULL);
-    palSetPadMode(GPIOB, 19,  PAL_MODE_OUTPUT_PUSHPULL);
-
-
-    memset(matrix, 0, MATRIX_ROWS * sizeof(matrix_row_t));
-    memset(matrix_debouncing, 0, MATRIX_ROWS * sizeof(matrix_row_t));
-
-    matrix_init_quantum();
 }
 
 uint8_t matrix_scan(void)
 {
-    for (int row = 0; row < MATRIX_ROWS; row++) {
-        matrix_row_t data = 0;
-        // strobe row
-        switch (row) {
-            case 0: palSetPad(GPIOB, 0);    break;
-            case 1: palSetPad(GPIOB, 1);    break;
-            case 2: palSetPad(GPIOB, 2);   break;
-            case 3: palSetPad(GPIOB, 3);   break;
-            case 4: palSetPad(GPIOB, 19);   break;
-
+    for (uint8_t i = 0; i < MATRIX_ROWS; i++) {
+        select_row(i);
+        wait_us(30);  // without this wait read unstable value.
+        matrix_row_t cols = read_cols();
+        if (matrix_debouncing[i] != cols) {
+            matrix_debouncing[i] = cols;
+            if (debouncing) {
+                debug("bounce!: "); debug_hex(debouncing); debug("\n");
+            }
+            debouncing = DEBOUNCE;
         }
+        unselect_rows();
+    }
 
-        // need wait to settle pin state
-        // if you wait too short, or have a too high update rate
-        // the keyboard might freeze, or there might not be enough
-        // processing power to update the LCD screen properly.
-        // 20us, or two ticks at 100000Hz seems to be OK
-        wait_us(20);
-        //Lets try reading all D and C
-        // read col data: { PTD5, PTD6, PTD7, PTC1, PTC2, PTC3, PTC4, PTC5, PTC6, PTC7 }
-        data = ((palReadPort(GPIOC) & 0xFF) ) |
-               ((palReadPort(GPIOD) & 0xFF) << 1 );
-
-        // un-strobe row
-        switch (row) {
-            case 0: palClearPad(GPIOB, 0);  break;
-            case 1: palClearPad(GPIOB, 1);  break;
-            case 2: palClearPad(GPIOB, 2); break;
-            case 3: palClearPad(GPIOB, 3); break;
-            case 4: palClearPad(GPIOB, 18);  break;
-
-        }
-
-        if (matrix_debouncing[row] != data) {
-            matrix_debouncing[row] = data;
-            debouncing = true;
-            debouncing_time = timer_read();
+    if (debouncing) {
+        if (--debouncing) {
+            wait_ms(1);
+        } else {
+            for (uint8_t i = 0; i < MATRIX_ROWS; i++) {
+                matrix[i] = matrix_debouncing[i];
+            }
         }
     }
 
-    if (debouncing && timer_elapsed(debouncing_time) > DEBOUNCE) {
-        for (int row = 0; row < MATRIX_ROWS; row++) {
-            matrix[row] = matrix_debouncing[row];
-        }
-        debouncing = false;
-    }
-
-    matrix_scan_quantum();
     return 1;
 }
 
 inline
 bool matrix_is_on(uint8_t row, uint8_t col)
 {
-    return (matrix[row] & (1<<col));
+    return (matrix[row] & ((matrix_row_t)1<<col));
 }
 
 inline
@@ -156,26 +115,94 @@ matrix_row_t matrix_get_row(uint8_t row)
     return matrix[row];
 }
 
-oid matrix_print(void)
+void matrix_print(void)
 {
-    xprintf("\nr/c 01234567\n");
+    print("\nr/c 0123456789ABCDEF\n");
     for (uint8_t row = 0; row < MATRIX_ROWS; row++) {
-        xprintf("%02X: ", row);
-        matrix_row_t data = matrix_get_row(row);
-        for (int col = 0; col < MATRIX_COLS; col++) {
-            if (data & (1<<col))
-                xprintf("1");
-            else
-                xprintf("0");
-        }
-        xprintf("\n");
+        phex(row); print(": ");
+        pbin_reverse16(matrix_get_row(row));
+        print("\n");
     }
-
-    wait_ms(50);
 }
 
 /* Column pin configuration
  */
+static void  init_cols(void)
+{
+    // internal pull-up
+    palSetPadMode(TEENSY_PIN0_IOPORT, TEENSY_PIN0, PAL_MODE_INPUT_PULLUP);
+    palSetPadMode(TEENSY_PIN1_IOPORT, TEENSY_PIN1, PAL_MODE_INPUT_PULLUP);
+    palSetPadMode(TEENSY_PIN2_IOPORT, TEENSY_PIN2, PAL_MODE_INPUT_PULLUP);
+    palSetPadMode(TEENSY_PIN3_IOPORT, TEENSY_PIN3, PAL_MODE_INPUT_PULLUP);
+    palSetPadMode(TEENSY_PIN4_IOPORT, TEENSY_PIN4, PAL_MODE_INPUT_PULLUP);
+    palSetPadMode(TEENSY_PIN5_IOPORT, TEENSY_PIN5, PAL_MODE_INPUT_PULLUP);
+    palSetPadMode(TEENSY_PIN6_IOPORT, TEENSY_PIN6, PAL_MODE_INPUT_PULLUP);
+    palSetPadMode(TEENSY_PIN7_IOPORT, TEENSY_PIN7, PAL_MODE_INPUT_PULLUP);
+    palSetPadMode(TEENSY_PIN8_IOPORT, TEENSY_PIN8, PAL_MODE_INPUT_PULLUP);
+    palSetPadMode(TEENSY_PIN9_IOPORT, TEENSY_PIN9, PAL_MODE_INPUT_PULLUP);
+    palSetPadMode(TEENSY_PIN10_IOPORT, TEENSY_PIN10, PAL_MODE_INPUT_PULLUP);
+    palSetPadMode(TEENSY_PIN11_IOPORT, TEENSY_PIN11, PAL_MODE_INPUT_PULLUP);
+    palSetPadMode(TEENSY_PIN12_IOPORT, TEENSY_PIN12, PAL_MODE_INPUT_PULLUP);
+    palSetPadMode(TEENSY_PIN13_IOPORT, TEENSY_PIN13, PAL_MODE_INPUT_PULLUP);
+    palSetPadMode(TEENSY_PIN14_IOPORT, TEENSY_PIN14, PAL_MODE_INPUT_PULLUP);
 
+}
 
+/* Returns status of switches(1:on, 0:off) */
+static matrix_row_t read_cols(void)
+{
+    return ((palReadPad(TEENSY_PIN0_IOPORT, TEENSY_PIN0)==PAL_HIGH) ? 0 : (1<<0))
+    | ((palReadPad(TEENSY_PIN1_IOPORT, TEENSY_PIN1)==PAL_HIGH) ? 0 : (1<<1))
+    | ((palReadPad(TEENSY_PIN2_IOPORT, TEENSY_PIN2)==PAL_HIGH) ? 0 : (1<<2))
+    | ((palReadPad(TEENSY_PIN3_IOPORT, TEENSY_PIN3)==PAL_HIGH) ? 0 : (1<<3))
+    | ((palReadPad(TEENSY_PIN4_IOPORT, TEENSY_PIN4)==PAL_HIGH) ? 0 : (1<<4))
+    | ((palReadPad(TEENSY_PIN5_IOPORT, TEENSY_PIN5)==PAL_HIGH) ? 0 : (1<<5))
+    | ((palReadPad(TEENSY_PIN6_IOPORT, TEENSY_PIN6)==PAL_HIGH) ? 0 : (1<<6))
+    | ((palReadPad(TEENSY_PIN7_IOPORT, TEENSY_PIN7)==PAL_HIGH) ? 0 : (1<<7))
+    | ((palReadPad(TEENSY_PIN8_IOPORT, TEENSY_PIN8)==PAL_HIGH) ? 0 : (1<<8))
+    | ((palReadPad(TEENSY_PIN9_IOPORT, TEENSY_PIN9)==PAL_HIGH) ? 0 : (1<<9))
+    | ((palReadPad(TEENSY_PIN10_IOPORT, TEENSY_PIN10)==PAL_HIGH) ? 0 : (1<<10))
+    | ((palReadPad(TEENSY_PIN11_IOPORT, TEENSY_PIN11)==PAL_HIGH) ? 0 : (1<<11))
+    | ((palReadPad(TEENSY_PIN12_IOPORT, TEENSY_PIN12)==PAL_HIGH) ? 0 : (1<<12))
+    | ((palReadPad(TEENSY_PIN13_IOPORT, TEENSY_PIN13)==PAL_HIGH) ? 0 : (1<<13))
+    | ((palReadPad(TEENSY_PIN14_IOPORT, TEENSY_PIN14)==PAL_HIGH) ? 0 : (1<<14));
+}
 
+/* Row pin configuration
+ */
+static void unselect_rows(void)
+{
+    palSetPadMode( TEENSY_PIN20_IOPORT, TEENSY_PIN20, PAL_MODE_INPUT);
+    palSetPadMode( TEENSY_PIN19_IOPORT, TEENSY_PIN19, PAL_MODE_INPUT);
+    palSetPadMode( TEENSY_PIN18_IOPORT, TEENSY_PIN18, PAL_MODE_INPUT);
+    palSetPadMode( TEENSY_PIN17_IOPORT, TEENSY_PIN17, PAL_MODE_INPUT);
+    palSetPadMode( TEENSY_PIN16_IOPORT, TEENSY_PIN16, PAL_MODE_INPUT);
+}
+
+static void select_row(uint8_t row)
+{
+    (void)row;
+    // Output low to select
+    switch (row) {
+        case 0:
+            palSetPadMode(TEENSY_PIN20_IOPORT, TEENSY_PIN20, PAL_MODE_OUTPUT_PUSHPULL);
+            palClearPad(TEENSY_PIN20_IOPORT, TEENSY_PIN20);
+            break;
+        case 1:
+            palSetPadMode(TEENSY_PIN19_IOPORT, TEENSY_PIN19, PAL_MODE_OUTPUT_PUSHPULL);
+            palClearPad(TEENSY_PIN19_IOPORT, TEENSY_PIN19);
+            break;
+        case 2:
+            palSetPadMode(TEENSY_PIN18_IOPORT, TEENSY_PIN18, PAL_MODE_OUTPUT_PUSHPULL);
+            palClearPad(TEENSY_PIN18_IOPORT, TEENSY_PIN18);
+            break;
+        case 3:
+            palSetPadMode(TEENSY_PIN17_IOPORT, TEENSY_PIN17, PAL_MODE_OUTPUT_PUSHPULL);
+            palClearPad(TEENSY_PIN17_IOPORT, TEENSY_PIN17);
+            break;
+        case 4:
+            palSetPadMode(TEENSY_PIN16_IOPORT, TEENSY_PIN16, PAL_MODE_OUTPUT_PUSHPULL);
+            palClearPad(TEENSY_PIN16_IOPORT, TEENSY_PIN16);
+            break;
+    }
+}

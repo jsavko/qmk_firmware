@@ -29,9 +29,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define DESCRIPTION QMK keyboard firmware built on ChibiOS
 
 /* key matrix size */
-#define MATRIX_ROWS 5
+#define MATRIX_ROWS 
 #define MATRIX_COLS 15
-#define DIODE_DIRECTION COL2ROW
+#define DIODE_DIRECTION COL2ROW  //COL2ROW
 
 /* define if matrix has ghost */
 //#define MATRIX_HAS_GHOST
